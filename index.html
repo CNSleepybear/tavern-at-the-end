@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>深渊之末酒馆 - 地下城肉鸽经营</title>
+    <style>
+        /* 引入复古像素字体 */
+        @import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'VT323', monospace, 'Courier New', Courier;
+            color: #fff;
+            user-select: none;
+        }
+
+        /* 核心：通过低分辨率Canvas+CSS像素化拉伸，实现3D像素风 */
+        canvas {
+            width: 100vw;
+            height: 100vh;
+            image-rendering: pixelated; /* Chrome/Edge/Safari */
+            image-rendering: crisp-edges; /* Firefox */
+            display: block;
+        }
+
+        /* UI 层 */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* 让鼠标穿透UI点击到底层3D */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .panel {
+            background: rgba(20, 20, 25, 0.85);
+            border: 2px solid #555;
+            box-shadow: inset 0 0 10px #000, 4px 4px 0px rgba(0,0,0,0.5);
+            padding: 15px;
+            pointer-events: auto; /* 恢复UI的点击 */
+            text-shadow: 2px 2px 0 #000;
+        }
+
+        /* 顶部状态栏 */
+        #top-bar {
+            display: flex;
+            justify-content: space-between;
+            margin: 10px;
+            font-size: 20px;
+            font-weight: bold;
+        }
+
+        .stat-item {
+            margin-right: 20px;
+        }
+        .gold { color: #ffd700; }
+        .rep { color: #ff69b4; }
+        .day { color: #00ffff; }
+        .buff-status { color: #ff9900; font-size: 16px; display: none; } /* 好酒Buff提示 */
+
+        /* 底部日志区域 */
+        #log-panel {
+            margin: 10px;
+            height: 150px;
+            overflow-y: auto;
+            font-size: 16px;
+            display: flex;
+            flex-direction: column;
+            line-height: 1.5;
+        }
+        
+        .log-msg {
+            animation: fadeIn 0.3s ease-in;
+            margin-bottom: 5px;
+            border-bottom: 1px dashed #444;
+            padding-bottom: 2px;
+        }
+        .log-joy { color: #a8ffb2; } /* 欢 */
+        .log-sorrow { color: #a1c4ff; } /* 悲 */
+        .log-fight { color: #ff6b6b; } /* 争斗 */
+        .log-sys { color: #ffea00; } /* 系统 */
+
+        /* 右侧操作栏 - 修复点击Bug：添加 pointer-events: auto */
+        #action-panel {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            pointer-events: auto; /* 【关键修复】允许按钮区域被点击 */
+        }
+
+        button {
+            background: #333;
+            color: #fff;
+            border: 2px solid #777;
+            padding: 10px 15px;
+            font-family: inherit;
+            font-size: 16px;
+            cursor: pointer;
+            transition: 0.1s;
+            box-shadow: 2px 2px 0 #000;
+            text-align: center;
+        }
+        button:hover:not(:disabled) { background: #555; transform: translate(-1px, -1px); box-shadow: 3px 3px 0 #000; }
+        button:active:not(:disabled) { background: #222; transform: translate(1px, 1px); box-shadow: 1px 1px 0 #000; }
+        button:disabled { background: #1a1a1a; color: #555; cursor: not-allowed; border-color: #333; box-shadow: none; transform: none; }
+
+        /* 浮动表情/文字 */
+        .floating-emoji {
+            position: absolute;
+            font-size: 20px;
+            pointer-events: none;
+            text-shadow: 1px 1px 0 #000;
+            animation: floatUp 2s forwards;
+            z-index: 10;
+        }
+
+        @keyframes floatUp {
+            0% { transform: translate(-50%, 0); opacity: 1; }
+            100% { transform: translate(-50%, -40px); opacity: 0; }
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateX(-10px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        /* 模态框 (Game Over / Start) */
+        #modal {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            pointer-events: auto;
+        }
+        #modal-content {
+            text-align: center;
+            max-width: 450px;
+        }
+        #modal h1 { font-size: 40px; color: #ffea00; margin-bottom: 10px; text-shadow: 3px 3px 0 #880000; }
+        #modal p { font-size: 18px; margin-bottom: 20px; line-height: 1.6; }
+
+        /* 隐藏滚动条 */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #111; }
+        ::-webkit-scrollbar-thumb { background: #555; }
+        ::-webkit-scrollbar-thumb:hover { background: #777; }
+    </style>
+    <!-- 引入 Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+    <!-- Three.js 画布容器 -->
+    <div id="canvas-container"></div>
+
+    <!-- UI 层 -->
+    <div id="ui-layer">
+        <div id="top-bar" class="panel">
+            <div>
+                <span class="stat-item day">📅 第 <span id="ui-day">1</span> 天</span>
+                <span class="stat-item time">⏳ <span id="ui-time">08:00</span></span>
+                <span id="ui-buff" class="stat-item buff-status">🍻 极品好酒供应中</span>
+            </div>
+            <div>
+                <span class="stat-item rep">❤️ 名声: <span id="ui-rep">50</span></span>
+                <span class="stat-item gold">💰 金币: <span id="ui-gold">100</span></span>
+            </div>
+        </div>
+
+        <div id="action-panel">
+            <button id="btn-buy-table" onclick="game.buyTable()">购买桌椅 (50G)<br><span style="font-size:12px;color:#aaa">增加4个客座</span></button>
+            <button id="btn-buy-drink" onclick="game.buyGoodDrink()">进货好酒 (30G)<br><span style="font-size:12px;color:#aaa">小费提升50%</span></button>
+            <button id="btn-clean" onclick="game.cleanTavern()">清理打扫 (10G)<br><span style="font-size:12px;color:#aaa">恢复5点名声</span></button>
+        </div>
+
+        <div id="log-panel" class="panel">
+            <!-- 日志动态插入于此 -->
+            <div class="log-msg log-sys">欢迎来到【深渊之末】酒馆。这里是地下城与地表最后的交界处。</div>
+        </div>
+    </div>
+
+    <!-- 弹窗 -->
+    <div id="modal">
+        <div id="modal-content" class="panel">
+            <h1 id="modal-title">深渊之末酒馆</h1>
+            <p id="modal-desc">
+                经营你的地下城酒馆！<br>
+                怪物与冒险者都会来此歇脚，会有冲突也会有欢笑。<br>
+                每一天结束你需要交纳 <b>逐渐递增的地租</b>。<br>
+                如果金币不足抵债，或名声归零，酒馆将倒闭。<br>
+                用右侧面板进行经营，努力生存下去吧！
+            </p>
+            <button id="btn-start" onclick="game.start()" style="font-size:24px; padding: 15px 30px; font-weight: bold;">开张营业</button>
+        </div>
+    </div>
+
+<script>
+/**
+ * 深渊之末酒馆 - 核心逻辑
+ */
+
+// ==========================================
+// 1. 基础配置与语料库 (故事系统)
+// ==========================================
+const CONFIG = {
+    // 渲染分辨率 (越小像素感越强)
+    RENDER_W: 400,
+    RENDER_H: 300,
+    DAY_LENGTH_SEC: 60, // 现实中60秒等于游戏里一天
+    RENT_BASE: 50,      // 基础每日租金
+    RENT_GROWTH: 20,    // 每天租金增长
+    MAX_TABLES: 7       // 最大桌子数量 (初始2个+可购买5个)
+};
+
+// 角色类型字典
+const CHAR_TYPES = {
+    ADVENTURER: { name: '冒险者', color: 0x4287f5, types: ['落魄剑士', '新手牧师', '高傲法师', '老练猎人', '重装骑士'] },
+    MONSTER: { name: '怪物', color: 0xf54242, types: ['绿皮哥布林', '岩石史莱姆', '独眼巨魔', '骷髅兵', '魅魔'] },
+    MYSTERIOUS: { name: '神秘人', color: 0x9d42f5, types: ['黑市商人', '流浪诗人', '深渊凝视者'] }
+};
+
+// 故事语料库 (酸甜苦辣)
+const STORIES = {
+    joy: [
+        "一位[角色1]和[角色2]分享了战利品，两人哈哈大笑。",
+        "[角色1]喝醉了，跳了一支滑稽的舞，酒馆里充满了快活的空气。",
+        "[角色1]找到了失散多年的战友，两人相拥而泣。",
+        "“敬这该死的地下城！”[角色1]举起酒杯大喊。",
+        "[角色1]给了一笔慷慨的小费，因为这里的烤肉让他想起了家乡。"
+    ],
+    sorrow: [
+        "[角色1]默默喝完最后一口酒，留下沾血的铭牌，走向了下层迷宫。",
+        "角落里，[角色1]一直在低声哭泣，似乎刚刚失去了队伍。",
+        "一杯苦酒下肚，[角色1]喃喃自语：“再也回不去了……”",
+        "[角色1]呆呆地看着空桌对面的座位，那里曾经坐着他的挚友。",
+        "一封未寄出的信被[角色1]遗忘在桌上，上面写满歉意。"
+    ],
+    fight: [
+        "[角色1]指责[角色2]出老千，两人大打出手！砸坏了酒杯。",
+        "因为一个眼神，[角色1]和[角色2]拔出了武器，吓跑了旁边的客人。",
+        "[角色1]喝多了，竟然试图调戏[角色2]，结果被揍得鼻青脸肿。",
+        "两桌客人因为信仰不同发生了械斗，酒馆名声受损！"
+    ]
+};
+
+// 辅助函数：随机获取
+function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+function randItem(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+// ==========================================
+// 2. 3D 渲染与场景初始化 (Three.js)
+// ==========================================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1a1a);
+scene.fog = new THREE.Fog(0x1a1a1a, 20, 60);
+
+// 正交相机 (Isometric view)
+const aspect = CONFIG.RENDER_W / CONFIG.RENDER_H;
+const d = 15;
+const camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 1, 1000);
+camera.position.set(20, 20, 20);
+camera.lookAt(0, 0, 0);
+
+// 渲染器 (低分辨率以实现像素风)
+const renderer = new THREE.WebGLRenderer({ antialias: false });
+renderer.setSize(CONFIG.RENDER_W, CONFIG.RENDER_H, false); 
+document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+// 光照
+const ambientLight = new THREE.AmbientLight(0x404040, 1.5); 
+scene.add(ambientLight);
+const dirLight = new THREE.DirectionalLight(0xffddaa, 1.2); 
+dirLight.position.set(10, 20, 10);
+scene.add(dirLight);
+
+// 材质库 (FlatShading增加LowPoly复古感)
+const matFloor = new THREE.MeshStandardMaterial({ color: 0x3d2817, roughness: 0.9, flatShading: true });
+const matWall = new THREE.MeshStandardMaterial({ color: 0x242424, roughness: 0.8, flatShading: true });
+const matTable = new THREE.MeshStandardMaterial({ color: 0x6e4324, flatShading: true });
+const matChair = new THREE.MeshStandardMaterial({ color: 0x4a2a14, flatShading: true });
+const matBar = new THREE.MeshStandardMaterial({ color: 0x2e1a0d, flatShading: true });
+
+// 搭建酒馆环境
+const envGroup = new THREE.Group();
+scene.add(envGroup);
+
+// 地板
+const floorGeo = new THREE.BoxGeometry(24, 1, 24);
+const floor = new THREE.Mesh(floorGeo, matFloor);
+floor.position.y = -0.5;
+envGroup.add(floor);
+
+// 墙壁
+const wallGeo = new THREE.BoxGeometry(24, 6, 1);
+const wallBack = new THREE.Mesh(wallGeo, matWall);
+wallBack.position.set(0, 3, -12.5);
+envGroup.add(wallBack);
+const wallGeo2 = new THREE.BoxGeometry(1, 6, 24);
+const wallLeft = new THREE.Mesh(wallGeo2, matWall);
+wallLeft.position.set(-12.5, 3, 0);
+envGroup.add(wallLeft);
+
+// 吧台
+const barGeo = new THREE.BoxGeometry(16, 3, 2);
+const bar = new THREE.Mesh(barGeo, matBar);
+bar.position.set(-2, 1.5, -9);
+envGroup.add(bar);
+
+// ==========================================
+// 3. 游戏实体与数据结构
+// ==========================================
+
+// 座位节点
+class Seat {
+    constructor(x, z, tableId) {
+        this.x = x;
+        this.z = z;
+        this.tableId = tableId;
+        this.isOccupied = false;
+        this.customer = null;
+        
+        const chairMesh = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1, 0.8), matChair);
+        chairMesh.position.set(x, 0.5, z);
+        envGroup.add(chairMesh);
+    }
+}
+
+// 顾客类
+class Customer {
+    constructor(id) {
+        this.id = id;
+        
+        const typeKeys = Object.keys(CHAR_TYPES);
+        let r = Math.random();
+        // 如果买了进货好酒，高级客人（神秘人/富裕冒险者）出现概率提升
+        let mysteryChance = game.buffDrink ? 0.8 : 0.9;
+        let catKey = r < 0.45 ? 'ADVENTURER' : (r < mysteryChance ? 'MONSTER' : 'MYSTERIOUS');
+        this.category = CHAR_TYPES[catKey];
+        this.name = randItem(this.category.types);
+        
+        this.state = 'ENTER';
+        this.targetSeat = null;
+        this.drinkTime = randInt(10, 30); 
+        this.timer = 0;
+        
+        this.mesh = new THREE.Group();
+        
+        const bodyColor = (catKey === 'MYSTERIOUS') ? 0x222222 : 
+                          (catKey === 'ADVENTURER' ? Math.random() * 0x8888ff : Math.random() * 0xff8888);
+        const matBody = new THREE.MeshStandardMaterial({ color: bodyColor, flatShading: true });
+        const body = new THREE.Mesh(new THREE.BoxGeometry(1, 1.2, 1), matBody);
+        body.position.y = 1.6;
+        this.mesh.add(body);
+        
+        const matHead = new THREE.MeshStandardMaterial({ color: this.category.color, flatShading: true });
+        const head = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), matHead);
+        head.position.y = 2.6;
+        this.mesh.add(head);
+
+        this.mesh.position.set(6, 0, 11);
+        scene.add(this.mesh);
+    }
+
+    update(delta) {
+        const speed = 4 * delta;
+
+        if (this.state === 'ENTER') {
+            let emptySeats = game.seats.filter(s => !s.isOccupied);
+            if (emptySeats.length > 0) {
+                this.targetSeat = randItem(emptySeats);
+                this.targetSeat.isOccupied = true;
+                this.targetSeat.customer = this;
+                this.state = 'SEEK_SEAT';
+            } else {
+                game.showEmoji(this.mesh, '💢');
+                game.addLog(`${this.name} 发现没有空位，骂骂咧咧地走了。`, 'sys');
+                this.state = 'LEAVING';
+            }
+        } 
+        else if (this.state === 'SEEK_SEAT' || this.state === 'LEAVING') {
+            let tx = this.state === 'SEEK_SEAT' ? this.targetSeat.x : 6;
+            let tz = this.state === 'SEEK_SEAT' ? this.targetSeat.z : 12;
+
+            let dx = tx - this.mesh.position.x;
+            let dz = tz - this.mesh.position.z;
+
+            this.mesh.rotation.z = Math.sin(Date.now() * 0.01) * 0.1;
+            this.mesh.rotation.y = Math.atan2(dx, dz); 
+
+            if (Math.abs(dx) > 0.1) {
+                this.mesh.position.x += Math.sign(dx) * speed;
+            } else if (Math.abs(dz) > 0.1) {
+                this.mesh.position.z += Math.sign(dz) * speed;
+            } else {
+                this.mesh.rotation.z = 0;
+                if (this.state === 'SEEK_SEAT') {
+                    this.state = 'DRINKING';
+                    game.showEmoji(this.mesh, '🍺');
+                } else if (this.state === 'LEAVING') {
+                    this.destroy();
+                }
+            }
+        }
+        else if (this.state === 'DRINKING') {
+            this.timer += delta;
+            this.mesh.position.y = Math.sin(Date.now() * 0.005) * 0.05;
+
+            if (Math.random() < 0.005) {
+                this.triggerRandomEvent();
+            }
+
+            if (this.timer > this.drinkTime) {
+                this.payBill();
+                this.state = 'LEAVING';
+                if (this.targetSeat) {
+                    this.targetSeat.isOccupied = false;
+                    this.targetSeat.customer = null;
+                    this.targetSeat = null;
+                }
+            }
+        }
+    }
+
+    triggerRandomEvent() {
+        let r = Math.random();
+        if (r < 0.3) {
+            game.showEmoji(this.mesh, '💔');
+            let msg = randItem(STORIES.sorrow).replace('[角色1]', this.name);
+            game.addLog(`[悲] ${msg}`, 'sorrow');
+        } else if (r < 0.6) {
+            game.showEmoji(this.mesh, '😂');
+            let msg = randItem(STORIES.joy).replace('[角色1]', this.name).replace('[角色2]', '某人');
+            game.addLog(`[欢] ${msg}`, 'joy');
+            game.updateStats(2, 1); 
+        } else if (r < 0.8) {
+            if (this.targetSeat) {
+                let neighbors = game.seats.filter(s => s.tableId === this.targetSeat.tableId && s !== this.targetSeat && s.isOccupied);
+                if (neighbors.length > 0) {
+                    let target = neighbors[0].customer;
+                    game.showEmoji(this.mesh, '⚔️');
+                    game.showEmoji(target.mesh, '💢');
+                    
+                    this.mesh.position.x += (Math.random()-0.5)*0.5;
+                    target.mesh.position.x += (Math.random()-0.5)*0.5;
+
+                    let msg = randItem(STORIES.fight).replace('[角色1]', this.name).replace('[角色2]', target.name);
+                    game.addLog(`[斗] ${msg}`, 'fight');
+                    game.updateStats(0, -5); 
+                }
+            }
+        }
+    }
+
+    payBill() {
+        let basePay = randInt(5, 15);
+        if (this.category.name === '神秘人') basePay += 20;
+        if (game.buffDrink) basePay = Math.floor(basePay * 1.5);
+        
+        game.updateStats(basePay, 1);
+        game.showEmoji(this.mesh, '🪙');
+    }
+
+    destroy() {
+        scene.remove(this.mesh);
+        game.customers = game.customers.filter(c => c !== this);
+    }
+}
+
+// ==========================================
+// 4. 游戏主逻辑与控制 (Game Manager)
+// ==========================================
+const game = {
+    isRunning: false,
+    gold: 100,
+    rep: 50,
+    day: 1,
+    timeAcc: 0, 
+    
+    customers: [],
+    seats: [],
+    tables: [],
+    
+    customerIdCounter: 0,
+    spawnTimer: 0,
+    buffDrink: false,
+
+    // UI 元素绑定
+    uiGold: document.getElementById('ui-gold'),
+    uiRep: document.getElementById('ui-rep'),
+    uiDay: document.getElementById('ui-day'),
+    uiTime: document.getElementById('ui-time'),
+    uiBuff: document.getElementById('ui-buff'),
+    logPanel: document.getElementById('log-panel'),
+    btnBuyTable: document.getElementById('btn-buy-table'),
+    btnBuyDrink: document.getElementById('btn-buy-drink'),
+    btnClean: document.getElementById('btn-clean'),
+
+    // 可用的新桌子位置
+    tablePositions: [
+        {x: 6, z: 0}, {x: -6, z: -4}, {x: 6, z: -4}, {x: -6, z: 8}, {x: 0, z: 8}
+    ],
+
+    init() {
+        this.addTable(0, 0);
+        this.addTable(-6, 4);
+        this.updateUI(); // 初始化时也校验一次按钮状态
+    },
+
+    start() {
+        document.getElementById('modal').style.display = 'none';
+        if (!this.isRunning && this.gold <= 0) {
+            // 重新开始逻辑：页面刷新最干净，这里做简单重置也可以
+            location.reload(); 
+            return;
+        }
+        this.isRunning = true;
+        this.addLog("酒馆开门营业，客人开始涌入...", "sys");
+    },
+
+    gameOver(reason) {
+        this.isRunning = false;
+        document.getElementById('modal').style.display = 'flex';
+        document.getElementById('modal-title').innerText = "酒馆倒闭";
+        document.getElementById('modal-title').style.color = "#ff4444";
+        document.getElementById('modal-desc').innerHTML = reason + "<br>你在地下城的故事结束了。";
+        document.getElementById('btn-start').innerText = "重新开始";
+        
+        this.gold = -1; // 标记失败状态
+    },
+
+    addTable(x, z) {
+        const tableId = this.tables.length;
+        this.tables.push({ id: tableId, x: x, z: z });
+        
+        const tableMesh = new THREE.Mesh(new THREE.BoxGeometry(2, 1.2, 2), matTable);
+        tableMesh.position.set(x, 0.6, z);
+        envGroup.add(tableMesh);
+
+        this.seats.push(new Seat(x - 1.5, z, tableId));
+        this.seats.push(new Seat(x + 1.5, z, tableId));
+        this.seats.push(new Seat(x, z - 1.5, tableId));
+        this.seats.push(new Seat(x, z + 1.5, tableId));
+    },
+
+    // --- 玩家操作 ---
+    buyTable() {
+        if (this.gold >= 50 && this.tables.length < CONFIG.MAX_TABLES) {
+            this.updateStats(-50, 0);
+            let posIndex = this.tables.length - 2; // 减去初始的2张桌子
+            let pos = this.tablePositions[posIndex];
+            this.addTable(pos.x, pos.z);
+            this.addLog("你购置了一套新桌椅，酒馆容量扩大了。", "sys");
+        }
+    },
+
+    buyGoodDrink() {
+        if (this.gold >= 30 && !this.buffDrink) {
+            this.updateStats(-30, 0);
+            this.buffDrink = true;
+            this.uiBuff.style.display = 'inline';
+            this.addLog("你进了一批上好的精灵麦酒，客人们会出手更大方！", "sys");
+            this.updateUI(); // 立即刷新按钮状态
+        }
+    },
+
+    cleanTavern() {
+        if (this.gold >= 10) {
+            this.updateStats(-10, 5);
+            this.addLog("你清理了地上的呕吐物和血迹，名声回升了。", "sys");
+        }
+    },
+
+    // --- 核心更新逻辑 ---
+    updateStats(g, r) {
+        this.gold += g;
+        this.rep += r;
+        if (this.rep > 100) this.rep = 100;
+        this.updateUI();
+
+        if (this.rep <= 0) {
+            this.gameOver("酒馆恶名远扬，再也没有人敢来了。");
+        }
+    },
+
+    updateUI() {
+        this.uiGold.innerText = this.gold;
+        this.uiRep.innerText = this.rep;
+        this.uiDay.innerText = this.day;
+
+        this.uiGold.style.color = this.gold < 50 ? '#ff4444' : '#ffd700';
+        this.uiRep.style.color = this.rep < 30 ? '#ff4444' : '#ff69b4';
+
+        // 动态禁用按钮 (金币不足或达到上限)
+        this.btnBuyTable.disabled = this.gold < 50 || this.tables.length >= CONFIG.MAX_TABLES;
+        if (this.tables.length >= CONFIG.MAX_TABLES) {
+            this.btnBuyTable.innerHTML = "桌椅已满<br><span style='font-size:12px;color:#aaa'>空间不足</span>";
+        }
+
+        this.btnBuyDrink.disabled = this.gold < 30 || this.buffDrink;
+        this.btnClean.disabled = this.gold < 10;
+    },
+
+    addLog(text, typeClass) {
+        const msg = document.createElement('div');
+        msg.className = `log-msg log-${typeClass}`;
+        
+        let h = Math.floor(8 + (this.timeAcc / CONFIG.DAY_LENGTH_SEC) * 16);
+        let m = Math.floor(((this.timeAcc / CONFIG.DAY_LENGTH_SEC) * 16 * 60) % 60);
+        let timeStr = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+        
+        msg.innerText = `[${timeStr}] ${text}`;
+        this.logPanel.appendChild(msg);
+        this.logPanel.scrollTop = this.logPanel.scrollHeight;
+    },
+
+    showEmoji(mesh3D, emoji) {
+        const pos = mesh3D.position.clone();
+        pos.y += 3; 
+        pos.project(camera);
+
+        const x = (pos.x * .5 + .5) * window.innerWidth;
+        const y = (pos.y * -.5 + .5) * window.innerHeight;
+
+        const el = document.createElement('div');
+        el.className = 'floating-emoji';
+        el.innerText = emoji;
+        el.style.left = `${x}px`;
+        el.style.top = `${y}px`;
+        document.body.appendChild(el);
+
+        setTimeout(() => el.remove(), 2000);
+    },
+
+    endDay() {
+        let rent = CONFIG.RENT_BASE + (this.day - 1) * CONFIG.RENT_GROWTH;
+        this.addLog(`==== 第 ${this.day} 天结束 ====`, "sys");
+        this.addLog(`地下城收税官带走了 ${rent} 金币的地租。`, "sorrow");
+        
+        this.updateStats(-rent, 0);
+        
+        if (this.gold < 0) {
+            this.gameOver("你无法支付高昂的地下城租金，酒馆被强行抵押。");
+            return;
+        }
+
+        this.day++;
+        this.timeAcc = 0; 
+        
+        // 重置好酒buff
+        this.buffDrink = false;
+        this.uiBuff.style.display = 'none';
+        
+        this.addLog(`==== 第 ${this.day} 天开始 ====`, "sys");
+        this.updateUI();
+    },
+
+    tick(delta) {
+        if (!this.isRunning) return;
+
+        this.timeAcc += delta;
+
+        let ratio = this.timeAcc / CONFIG.DAY_LENGTH_SEC;
+        let h = Math.floor(8 + ratio * 16);
+        let m = Math.floor((ratio * 16 * 60) % 60);
+        this.uiTime.innerText = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+
+        if (this.timeAcc >= CONFIG.DAY_LENGTH_SEC) {
+            this.endDay();
+        }
+
+        this.spawnTimer -= delta;
+        let spawnInterval = Math.max(1, 6 - (this.rep / 20)); 
+        if (this.spawnTimer <= 0) {
+            if (this.customers.length < this.seats.length + 3) {
+                this.customers.push(new Customer(this.customerIdCounter++));
+            }
+            this.spawnTimer = spawnInterval + Math.random() * 2;
+        }
+
+        this.customers.forEach(c => c.update(delta));
+    }
+};
+
+// ==========================================
+// 5. 渲染循环 (Main Loop)
+// ==========================================
+const clock = new THREE.Clock();
+
+function animate() {
+    requestAnimationFrame(animate);
+    const delta = clock.getDelta();
+    
+    game.tick(delta);
+    renderer.render(scene, camera);
+}
+
+game.init();
+animate();
+
+</script>
+</body>
+</html>
